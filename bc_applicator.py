@@ -67,6 +67,32 @@ def _get_expr(specs, key, default):
     parsed = _parse_expr(specs.get(key))
     return default if parsed is None else parsed
 
+
+def _reaction_targets(specs, L, total_vertical, total_moment):
+    """Return support reactions for the current beam support condition."""
+    support_type = str(specs.get("support_type", "cantilever_left"))
+
+    if support_type == "simply_supported":
+        # For simply-supported: use moment equilibrium about left support
+        # M_left = 0: right_reaction * L - total_moment = 0
+        right_reaction = sp.simplify(total_moment / L)
+        # Vertical equilibrium: left_reaction + right_reaction = total_vertical
+        left_reaction = sp.simplify(total_vertical - right_reaction)
+        return {
+            "left_shear": left_reaction,
+            "left_moment": sp.Integer(0),
+            "right_shear": right_reaction,
+            "right_moment": sp.Integer(0),
+        }
+
+    # Default to cantilever-left behavior.
+    return {
+        "left_shear": total_vertical,
+        "left_moment": total_moment,
+        "right_shear": sp.Integer(0),
+        "right_moment": sp.Integer(0),
+    }
+
 def apply_bcs_and_solve(phi, coeffs, x, y, specs: dict) -> tuple:
     """
     Assembles compatibility and physical boundary constraints to resolve 
@@ -105,6 +131,8 @@ def apply_bcs_and_solve(phi, coeffs, x, y, specs: dict) -> tuple:
         bottom_tau_target = sp.Integer(0)
     
     # Top/Bottom Traction Profiles
+    # For standard loading with distributed load: σy(x,c) = -q
+    # For free surfaces: σy = 0 and τxy = 0 where no load is applied
     equations.extend(_equations_from_relation(sigma_y.subs(y, c), top_sigma_target, x))
     equations.extend(_equations_from_relation(sigma_y.subs(y, -c), bottom_sigma_target, x))
     equations.extend(_equations_from_relation(tau_xy.subs(y, c), top_tau_target, x))
@@ -117,6 +145,8 @@ def apply_bcs_and_solve(phi, coeffs, x, y, specs: dict) -> tuple:
     axial_target = _parse_expr(specs.get("resultant_axial_force"))
     shear_target = _parse_expr(specs.get("resultant_shear_force"))
     moment_target = _parse_expr(specs.get("resultant_moment"))
+
+    support_type = str(specs.get("support_type", "cantilever_left"))
 
     if q_val is not None and axial_target is None and shear_target is None and moment_target is None:
         q = sp.Symbol('q')
@@ -142,12 +172,38 @@ def apply_bcs_and_solve(phi, coeffs, x, y, specs: dict) -> tuple:
         shear_target = sp.Integer(0)
         moment_target = sp.Integer(0)
 
-    if axial_target is not None:
-        equations.extend(_scalar_equation(sp.integrate(section_sigma_x, (y, -c, c)), axial_target))
-    if shear_target is not None:
-        equations.extend(_scalar_equation(sp.integrate(section_tau_xy, (y, -c, c)), shear_target))
-    if moment_target is not None:
-        equations.extend(_scalar_equation(sp.integrate(section_sigma_x * y, (y, -c, c)), moment_target))
+    reactions = _reaction_targets(
+        specs,
+        L,
+        shear_target if shear_target is not None else sp.Integer(0),
+        moment_target if moment_target is not None else sp.Integer(0),
+    )
+
+    if support_type == "simply_supported":
+        left_section_sigma = sigma_x.subs(x, sp.Integer(0))
+        left_section_tau = tau_xy.subs(x, sp.Integer(0))
+        right_section_sigma = sigma_x.subs(x, L)
+        right_section_tau = tau_xy.subs(x, L)
+
+        # Left support: shear and moment equilibrium
+        equations.extend(_scalar_equation(sp.integrate(left_section_tau, (y, -c, c)), reactions["left_shear"]))
+        equations.extend(_scalar_equation(sp.integrate(left_section_sigma * y, (y, -c, c)), reactions["left_moment"]))
+        
+        # Right support: moment equilibrium (shear internal = external applied)
+        equations.extend(_scalar_equation(sp.integrate(right_section_sigma * y, (y, -c, c)), reactions["right_moment"]))
+        
+        # Right support: shear equilibrium (ADDED - was missing, critical fix)
+        equations.extend(_scalar_equation(sp.integrate(right_section_tau, (y, -c, c)), reactions["right_shear"]))
+        
+        if axial_target is not None:
+            equations.extend(_scalar_equation(sp.integrate(left_section_sigma, (y, -c, c)), axial_target))
+    else:
+        if axial_target is not None:
+            equations.extend(_scalar_equation(sp.integrate(section_sigma_x, (y, -c, c)), axial_target))
+        if shear_target is not None:
+            equations.extend(_scalar_equation(sp.integrate(section_tau_xy, (y, -c, c)), shear_target))
+        if moment_target is not None:
+            equations.extend(_scalar_equation(sp.integrate(section_sigma_x * y, (y, -c, c)), moment_target))
         
     # Solve the system linear equations
     sol = sp.solve(equations, coeffs)

@@ -6,6 +6,8 @@ import tkinter as tk
 from contextlib import redirect_stdout
 from tkinter import messagebox, scrolledtext, ttk
 
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
 try:
     from .main import run_solver_pipeline
 except ImportError:
@@ -13,13 +15,13 @@ except ImportError:
 
 
 LOAD_TYPES = {
-    "distributed_load": {"label": "Uniformly distributed load", "symbol": "q", "default": 0.0, "display": "q"},
-    "partial_distributed": {"label": "Partial distributed (span)", "symbol": "q", "default": 0.0, "display": "q over span"},
-    "point_load": {"label": "Point load at x", "symbol": "P", "default": 0.0, "display": "P@x"},
-    "end_load": {"label": "End point load (x=L)", "symbol": "P", "default": 0.0, "display": "P"},
-    "moment": {"label": "End moment (x=L)", "symbol": "M", "default": 0.0, "display": "M"},
-    "concentrated_moment": {"label": "Concentrated moment at x", "symbol": "M", "default": 0.0, "display": "M@x"},
-    "pure_tension": {"label": "Axial force", "symbol": "F", "default": 0.0, "display": "F"},
+    "distributed_load": {"label": "Uniformly distributed load", "symbol": "q", "default": 0.0, "display": "q", "unit": "N/m"},
+    "partial_distributed": {"label": "Partial distributed (span)", "symbol": "q", "default": 0.0, "display": "q over span", "unit": "N/m"},
+    "point_load": {"label": "Point load at x", "symbol": "P", "default": 0.0, "display": "P@x", "unit": "N"},
+    "end_load": {"label": "End point load (x=L)", "symbol": "P", "default": 0.0, "display": "P", "unit": "N"},
+    "moment": {"label": "End moment (x=L)", "symbol": "M", "default": 0.0, "display": "M", "unit": "N·m"},
+    "concentrated_moment": {"label": "Concentrated moment at x", "symbol": "M", "default": 0.0, "display": "M@x", "unit": "N·m"},
+    "pure_tension": {"label": "Axial force", "symbol": "F", "default": 0.0, "display": "F", "unit": "N"},
 }
 
 
@@ -29,11 +31,13 @@ class AirySolverApp:
         self.root.title("Airy Stress Function Solver")
         self.root.geometry("1280x820")
         self.root.minsize(1120, 720)
+        self.root.configure(bg="#1a1a1a")
 
         self.beam_length_var = tk.StringVar(value="12")
         self.beam_half_height_var = tk.StringVar(value="1.5")
         self.load_type_var = tk.StringVar(value="distributed_load")
         self.load_value_var = tk.StringVar(value="10")
+        self.support_type_var = tk.StringVar(value="cantilever_left")
         self.load_rows: list[dict[str, float | str]] = []
         self.next_load_id = 1
         self.place_mode: str | None = None
@@ -41,6 +45,8 @@ class AirySolverApp:
         self.drag_load_id: int | None = None
         self.drag_offset_x: float = 0.0
         self.beam_bounds = (80, 800)
+        self.diagram_canvas = None
+        self.diagram_frame = None
 
         self._build_styles()
         self._build_layout()
@@ -57,6 +63,20 @@ class AirySolverApp:
         style.configure("Subtitle.TLabel", font=("Segoe UI", 10))
         style.configure("Section.TLabelframe", padding=10)
         style.configure("Section.TLabelframe.Label", font=("Segoe UI", 10, "bold"))
+        
+        # Configure root window background
+        self.root.configure(bg="#1a1a1a")
+        style.theme_settings("clam", {"TFrame": {"configure": {"background": "#1a1a1a"}}})
+        style.configure("TFrame", background="#1a1a1a")
+        style.configure("TLabelframe", background="#1a1a1a", foreground="#FFFFFF")
+        style.configure("TLabel", background="#1a1a1a", foreground="#FFFFFF")
+        style.configure("TButton", background="#0066CC", foreground="#FFFFFF")
+        style.map("TButton", background=[("active", "#0099FF")])
+        style.configure("TEntry", fieldbackground="#000000", foreground="#FFFFFF", background="#1a1a1a")
+        style.configure("TCombobox", fieldbackground="#000000", foreground="#FFFFFF", background="#1a1a1a")
+        style.map("TCombobox", fieldbackground=[("readonly", "#000000")])
+        style.configure("Treeview", background="#1a1a1a", foreground="#FFFFFF", fieldbackground="#1a1a1a")
+        style.map("Treeview", background=[("selected", "#0066CC")], foreground=[("selected", "#FFFFFF")])
 
     def _build_layout(self) -> None:
         outer = ttk.Frame(self.root, padding=14)
@@ -81,8 +101,11 @@ class AirySolverApp:
         right.pack(side="right", fill="y", padx=(14, 0))
         right.pack_propagate(False)
 
-        self.canvas = tk.Canvas(left, bg="#f6f2ea", highlightthickness=0, height=380)
+        self.canvas = tk.Canvas(left, bg="#000000", highlightthickness=0, height=380)
         self.canvas.pack(fill="x", expand=False)
+
+        self.diagram_frame = ttk.LabelFrame(left, text="SFD / BMD", style="Section.TLabelframe")
+        self.diagram_frame.pack(fill="both", expand=True, pady=(12, 0))
 
         beam_controls = ttk.LabelFrame(left, text="Beam Parameters", style="Section.TLabelframe")
         beam_controls.pack(fill="x", pady=(12, 0))
@@ -91,11 +114,22 @@ class AirySolverApp:
         beam_grid.pack(fill="x")
         beam_grid.columnconfigure(1, weight=1)
         beam_grid.columnconfigure(3, weight=1)
+        beam_grid.columnconfigure(5, weight=1)
 
-        ttk.Label(beam_grid, text="Length L").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(beam_grid, text="Length L (m)").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(beam_grid, textvariable=self.beam_length_var, width=12).grid(row=0, column=1, sticky="we", pady=4)
-        ttk.Label(beam_grid, text="Half-height c").grid(row=0, column=2, sticky="w", padx=(12, 8), pady=4)
+        ttk.Label(beam_grid, text="Half-height c (m)").grid(row=0, column=2, sticky="w", padx=(12, 8), pady=4)
         ttk.Entry(beam_grid, textvariable=self.beam_half_height_var, width=12).grid(row=0, column=3, sticky="we", pady=4)
+        ttk.Label(beam_grid, text="Support Type").grid(row=0, column=4, sticky="w", padx=(12, 8), pady=4)
+        support_selector = ttk.Combobox(
+            beam_grid,
+            textvariable=self.support_type_var,
+            values=["cantilever_left", "simply_supported"],
+            state="readonly",
+            width=18,
+        )
+        support_selector.grid(row=0, column=5, sticky="we", pady=4)
+        support_selector.bind("<<ComboboxSelected>>", lambda _e: self._redraw_beam())
 
         load_controls = ttk.LabelFrame(left, text="Loads", style="Section.TLabelframe")
         load_controls.pack(fill="x", pady=(12, 0))
@@ -116,7 +150,8 @@ class AirySolverApp:
         load_selector.grid(row=0, column=1, sticky="we", pady=4)
         load_selector.bind("<<ComboboxSelected>>", self._on_load_type_changed)
 
-        ttk.Label(load_grid, text="Magnitude").grid(row=0, column=2, sticky="w", padx=(12, 8), pady=4)
+        self.magnitude_label = ttk.Label(load_grid, text="Magnitude (N/m)")
+        self.magnitude_label.grid(row=0, column=2, sticky="w", padx=(12, 8), pady=4)
         ttk.Entry(load_grid, textvariable=self.load_value_var, width=12).grid(row=0, column=3, sticky="we", pady=4)
 
         button_row = ttk.Frame(load_controls)
@@ -139,7 +174,7 @@ class AirySolverApp:
         summary_box = ttk.LabelFrame(right, text="Solver Output", style="Section.TLabelframe")
         summary_box.pack(fill="both", expand=True)
 
-        self.output = scrolledtext.ScrolledText(summary_box, wrap="word", height=32, font=("Consolas", 10))
+        self.output = scrolledtext.ScrolledText(summary_box, wrap="word", height=32, font=("Consolas", 10), bg="#000000", fg="#FFFFFF", insertbackground="#00FFFF")
         self.output.pack(fill="both", expand=True)
         self._append_output("Add one or more loads, then press Solve.\n")
 
@@ -163,6 +198,8 @@ class AirySolverApp:
     def _on_load_type_changed(self, _event=None) -> None:
         selected = LOAD_TYPES[self.load_type_var.get()]
         self.load_value_var.set(str(selected["default"]))
+        unit = selected.get("unit", "")
+        self.magnitude_label.config(text=f"Magnitude ({unit})")
 
     def _append_output(self, text: str) -> None:
         self.output.insert("end", text)
@@ -510,6 +547,7 @@ class AirySolverApp:
         specs["resultant_shear_force"] = shear_total
         specs["resultant_moment"] = moment_total
         specs["resultant_axial_force"] = axial_total
+        specs["support_type"] = self.support_type_var.get()
 
         # Infer degree from active load types (choose highest requirement)
         degree_map = {
@@ -542,6 +580,13 @@ class AirySolverApp:
             return
 
         self._clear_output()
+        self._append_output("=" * 60 + "\n")
+        self._append_output("ALL INPUTS AND OUTPUTS ARE IN SI UNITS:\n")
+        self._append_output("  • Length: meters (m)\n")
+        self._append_output("  • Force: Newtons (N)\n")
+        self._append_output("  • Stress: Pascals (Pa = N/m²)\n")
+        self._append_output("=" * 60 + "\n\n")
+        
         buffer = io.StringIO()
         try:
             with redirect_stdout(buffer):
@@ -555,22 +600,39 @@ class AirySolverApp:
         self._append_output(buffer.getvalue())
 
         self._redraw_beam()
+        self._render_embedded_diagram(result, specs, numeric_values)
 
         # result contains final_phi, (sx, sy, txy), (c, L), mapping
+        try:
+            self._draw_reactions(specs, numeric_values)
+        except Exception:
+            # if unpack fails, ignore extended plotting
+            pass
+
+    def _render_embedded_diagram(self, result, specs: dict, numeric_values: dict) -> None:
+        if self.diagram_canvas is not None:
+            self.diagram_canvas.get_tk_widget().destroy()
+            self.diagram_canvas = None
+
+        if not result:
+            return
+
         try:
             _, stresses, geom, mapping = result
             sx_sym, _, txy_sym = stresses
             c_sym, L_sym = geom
             try:
-                from visualizer import plot_sfd_bmd
+                from visualizer import build_sfd_bmd_figure
             except Exception:
-                from .visualizer import plot_sfd_bmd
+                from .visualizer import build_sfd_bmd_figure
 
-            plot_sfd_bmd(sx_sym, txy_sym, sp.Symbol('x'), sp.Symbol('y'), c_sym, L_sym, mapping, specs)
-            self._draw_reactions(specs, numeric_values)
-        except Exception:
-            # if unpack fails, ignore extended plotting
-            pass
+            fig = build_sfd_bmd_figure(sx_sym, txy_sym, sp.Symbol('x'), sp.Symbol('y'), c_sym, L_sym, mapping, specs)
+            self.diagram_canvas = FigureCanvasTkAgg(fig, master=self.diagram_frame)
+            self.diagram_canvas.draw()
+            widget = self.diagram_canvas.get_tk_widget()
+            widget.pack(fill="both", expand=True)
+        except Exception as exc:
+            self._append_output(f"\n[WARN] Could not render embedded diagrams: {exc}\n")
 
     def _draw_reactions(self, specs: dict, numeric_values: dict) -> None:
         # overlay simple reaction arrows at x=0 based on resultant_shear_force and resultant_moment
@@ -588,12 +650,12 @@ class AirySolverApp:
         beam_top = self.canvas.winfo_height() // 2 - 20
         if abs(shear) > 1e-6:
             dir_sign = -1 if shear > 0 else 1
-            self.canvas.create_line(beam_left + 6, beam_top - 12, beam_left + 6, beam_top - 48 * dir_sign, arrow=tk.LAST, width=3, fill='#ff4500')
-            self.canvas.create_text(beam_left + 26, beam_top - 48 * dir_sign - 8, text=f'V0={shear:.2f}', fill='#ff4500', anchor='w')
+            self.canvas.create_line(beam_left + 6, beam_top - 12, beam_left + 6, beam_top - 48 * dir_sign, arrow=tk.LAST, width=3, fill='#00FFFF')
+            self.canvas.create_text(beam_left + 26, beam_top - 48 * dir_sign - 8, text=f'V0={shear:.2f}', fill='#00FFFF', anchor='w', font=("Segoe UI", 9, "bold"))
         if abs(moment) > 1e-6:
             x_pos = beam_left + 24
-            self.canvas.create_arc(x_pos - 36, beam_top - 64, x_pos + 36, beam_top + 12, start=35, extent=260, style='arc', width=2, outline='#8b0000')
-            self.canvas.create_text(x_pos + 48, beam_top - 36, text=f'M0={moment:.2f}', fill='#8b0000', anchor='w')
+            self.canvas.create_arc(x_pos - 36, beam_top - 64, x_pos + 36, beam_top + 12, start=35, extent=260, style='arc', width=2, outline='#FFFF00')
+            self.canvas.create_text(x_pos + 48, beam_top - 36, text=f'M0={moment:.2f}', fill='#FFFF00', anchor='w', font=("Segoe UI", 9, "bold"))
 
     def _redraw_beam(self) -> None:
         self.canvas.delete("all")
@@ -608,13 +670,42 @@ class AirySolverApp:
         beam_top = beam_y - 20
         beam_bottom = beam_y + 20
 
-        self.canvas.create_rectangle(beam_left, beam_top, beam_right, beam_bottom, fill="#3d4f6b", outline="#1d2430")
-        self.canvas.create_text(width // 2, beam_top - 28, text="Beam", fill="#333", font=("Segoe UI", 11, "bold"))
-        self.canvas.create_text(beam_left, beam_bottom + 24, text="x = 0", fill="#555", font=("Segoe UI", 9))
-        self.canvas.create_text(beam_right, beam_bottom + 24, text="x = L", fill="#555", font=("Segoe UI", 9))
+        self.canvas.create_rectangle(beam_left, beam_top, beam_right, beam_bottom, fill="#0066CC", outline="#00FFFF")
+        self.canvas.create_text(width // 2, beam_top - 28, text="Beam", fill="#FFFFFF", font=("Segoe UI", 11, "bold"))
+        self.canvas.create_text(beam_left, beam_bottom + 24, text="x = 0", fill="#00FFFF", font=("Segoe UI", 9, "bold"))
+        self.canvas.create_text(beam_right, beam_bottom + 24, text="x = L", fill="#00FFFF", font=("Segoe UI", 9, "bold"))
+
+        self._draw_supports(beam_left, beam_right, beam_top, beam_bottom, beam_y)
 
         for index, row in enumerate(self.load_rows):
             self._draw_load(beam_left, beam_right, beam_top, beam_bottom, beam_y, index, row)
+
+    def _draw_supports(self, beam_left: int, beam_right: int, beam_top: int, beam_bottom: int, beam_y: int) -> None:
+        support_type = self.support_type_var.get()
+        if support_type == "simply_supported":
+            # left pin
+            self.canvas.create_polygon(
+                beam_left - 8, beam_bottom + 2,
+                beam_left + 18, beam_bottom + 2,
+                beam_left + 5, beam_bottom + 28,
+                fill="#0066CC", outline="#00FFFF", tags=("support",)
+            )
+            self.canvas.create_line(beam_left - 12, beam_bottom + 28, beam_left + 22, beam_bottom + 28, fill="#00FFFF", width=2, tags=("support",))
+            # right roller
+            self.canvas.create_polygon(
+                beam_right - 8, beam_bottom + 2,
+                beam_right + 18, beam_bottom + 2,
+                beam_right + 5, beam_bottom + 28,
+                fill="#0066CC", outline="#00FFFF", tags=("support",)
+            )
+            self.canvas.create_oval(beam_right - 2, beam_bottom + 28, beam_right + 6, beam_bottom + 36, fill="#0099FF", outline="#00FFFF", tags=("support",))
+            self.canvas.create_oval(beam_right + 8, beam_bottom + 28, beam_right + 16, beam_bottom + 36, fill="#0099FF", outline="#00FFFF", tags=("support",))
+            self.canvas.create_line(beam_right - 12, beam_bottom + 38, beam_right + 22, beam_bottom + 38, fill="#00FFFF", width=2, tags=("support",))
+        else:
+            # cantilever fixed at left end
+            self.canvas.create_rectangle(beam_left - 16, beam_top - 12, beam_left - 2, beam_bottom + 12, fill="#0066CC", outline="#00FFFF", tags=("support",))
+            for y in range(beam_top - 10, beam_bottom + 11, 8):
+                self.canvas.create_line(beam_left - 16, y, beam_left - 28, y + 8, fill="#00FF00", width=2, tags=("support",))
 
     def _draw_load(self, beam_left: int, beam_right: int, beam_top: int, beam_bottom: int, beam_y: int, index: int, row: dict) -> None:
         key = str(row["key"])
@@ -628,47 +719,47 @@ class AirySolverApp:
             start_x = beam_left + 20
             end_x = beam_right - 20
             for x_pos in range(start_x, end_x, 36):
-                self.canvas.create_line(x_pos, beam_top - 12, x_pos, beam_top - 46, arrow=tk.LAST, width=2, fill="#b5432d", tags=tags)
-            self.canvas.create_text((beam_left + beam_right) // 2, beam_top - 58, text=label, fill="#b5432d", font=("Segoe UI", 9, "bold"), tags=tags)
+                self.canvas.create_line(x_pos, beam_top - 12, x_pos, beam_top - 46, arrow=tk.LAST, width=2, fill="#00FFFF", tags=tags)
+            self.canvas.create_text((beam_left + beam_right) // 2, beam_top - 58, text=label, fill="#00FFFF", font=("Segoe UI", 9, "bold"), tags=tags)
         elif key == "point_load":
             x_pos = self._x_to_canvas(float(row.get("x", self._parse_float(self.beam_length_var.get(), "Beam length L"))))
-            self.canvas.create_line(x_pos, beam_top - 12, x_pos, beam_top - 68, arrow=tk.LAST, width=3, fill="#b5432d", tags=tags)
-            self.canvas.create_oval(x_pos - 5, beam_top - 72, x_pos + 5, beam_top - 62, fill="#b5432d", outline="", tags=tags)
-            self.canvas.create_text(x_pos, beam_top - 80, text=label, fill="#b5432d", font=("Segoe UI", 9, "bold"), tags=tags)
+            self.canvas.create_line(x_pos, beam_top - 12, x_pos, beam_top - 68, arrow=tk.LAST, width=3, fill="#00FF00", tags=tags)
+            self.canvas.create_oval(x_pos - 5, beam_top - 72, x_pos + 5, beam_top - 62, fill="#00FF00", outline="", tags=tags)
+            self.canvas.create_text(x_pos, beam_top - 80, text=label, fill="#00FF00", font=("Segoe UI", 9, "bold"), tags=tags)
         elif key == "end_load":
             x_pos = self._x_to_canvas(float(row.get("x", self._parse_float(self.beam_length_var.get(), "Beam length L"))))
-            self.canvas.create_line(x_pos, beam_top - 12, x_pos, beam_top - 68, arrow=tk.LAST, width=3, fill="#2d6b9f", tags=tags)
-            self.canvas.create_text(x_pos - 48, beam_top - 76, text=label, fill="#2d6b9f", font=("Segoe UI", 9, "bold"), tags=tags)
+            self.canvas.create_line(x_pos, beam_top - 12, x_pos, beam_top - 68, arrow=tk.LAST, width=3, fill="#00FF00", tags=tags)
+            self.canvas.create_text(x_pos - 48, beam_top - 76, text=label, fill="#00FF00", font=("Segoe UI", 9, "bold"), tags=tags)
         elif key == "moment":
             x_pos = self._x_to_canvas(float(row.get("x", self._parse_float(self.beam_length_var.get(), "Beam length L"))))
-            self.canvas.create_arc(x_pos - 42, beam_top - 74, x_pos + 42, beam_top + 10, start=35, extent=260, style="arc", width=3, outline="#7a3db5", tags=tags)
-            self.canvas.create_line(x_pos + 34, beam_top - 18, x_pos + 46, beam_top - 32, arrow=tk.LAST, width=2, fill="#7a3db5", tags=tags)
-            self.canvas.create_text(x_pos - 30, beam_top - 82, text=label, fill="#7a3db5", font=("Segoe UI", 9, "bold"), tags=tags)
+            self.canvas.create_arc(x_pos - 42, beam_top - 74, x_pos + 42, beam_top + 10, start=35, extent=260, style="arc", width=3, outline="#FFFF00", tags=tags)
+            self.canvas.create_line(x_pos + 34, beam_top - 18, x_pos + 46, beam_top - 32, arrow=tk.LAST, width=2, fill="#FFFF00", tags=tags)
+            self.canvas.create_text(x_pos - 30, beam_top - 82, text=label, fill="#FFFF00", font=("Segoe UI", 9, "bold"), tags=tags)
             # add a small center handle for dragging
-            self.canvas.create_oval(x_pos - 5, beam_top - 5, x_pos + 5, beam_top + 5, fill="#7a3db5", outline="", tags=tags)
+            self.canvas.create_oval(x_pos - 5, beam_top - 5, x_pos + 5, beam_top + 5, fill="#FFFF00", outline="", tags=tags)
         elif key == "concentrated_moment":
             x_pos = self._x_to_canvas(float(row.get("x", self._parse_float(self.beam_length_var.get(), "Beam length L"))))
-            self.canvas.create_arc(x_pos - 42, beam_top - 74, x_pos + 42, beam_top + 10, start=35, extent=260, style="arc", width=3, outline="#7a3db5", tags=tags)
-            self.canvas.create_line(x_pos + 34, beam_top - 18, x_pos + 46, beam_top - 32, arrow=tk.LAST, width=2, fill="#7a3db5", tags=tags)
-            self.canvas.create_text(x_pos - 30, beam_top - 82, text=label, fill="#7a3db5", font=("Segoe UI", 9, "bold"), tags=tags)
-            self.canvas.create_oval(x_pos - 5, beam_top - 5, x_pos + 5, beam_top + 5, fill="#7a3db5", outline="", tags=tags)
+            self.canvas.create_arc(x_pos - 42, beam_top - 74, x_pos + 42, beam_top + 10, start=35, extent=260, style="arc", width=3, outline="#FFFF00", tags=tags)
+            self.canvas.create_line(x_pos + 34, beam_top - 18, x_pos + 46, beam_top - 32, arrow=tk.LAST, width=2, fill="#FFFF00", tags=tags)
+            self.canvas.create_text(x_pos - 30, beam_top - 82, text=label, fill="#FFFF00", font=("Segoe UI", 9, "bold"), tags=tags)
+            self.canvas.create_oval(x_pos - 5, beam_top - 5, x_pos + 5, beam_top + 5, fill="#FFFF00", outline="", tags=tags)
         elif key == "pure_tension":
-            self.canvas.create_line(beam_left - 46, beam_y, beam_left - 8, beam_y, arrow=tk.LAST, width=3, fill="#2e8b57", tags=tags)
-            self.canvas.create_line(beam_right + 8, beam_y, beam_right + 46, beam_y, arrow=tk.LAST, width=3, fill="#2e8b57", tags=tags)
-            self.canvas.create_text(width // 2, beam_bottom + 42, text=label, fill="#2e8b57", font=("Segoe UI", 9, "bold"), tags=tags)
+            self.canvas.create_line(beam_left - 46, beam_y, beam_left - 8, beam_y, arrow=tk.LAST, width=3, fill="#FF00FF", tags=tags)
+            self.canvas.create_line(beam_right + 8, beam_y, beam_right + 46, beam_y, arrow=tk.LAST, width=3, fill="#FF00FF", tags=tags)
+            self.canvas.create_text(width // 2, beam_bottom + 42, text=label, fill="#FF00FF", font=("Segoe UI", 9, "bold"), tags=tags)
         elif key == "partial_distributed":
             start_x = self._x_to_canvas(float(row.get("start", 0.0)))
             end_x = self._x_to_canvas(float(row.get("end", self._parse_float(self.beam_length_var.get(), "Beam length L"))))
             if end_x < start_x:
                 start_x, end_x = end_x, start_x
             for x_pos in range(int(start_x), int(end_x) + 1, 36):
-                self.canvas.create_line(x_pos, beam_top - 12, x_pos, beam_top - 46, arrow=tk.LAST, width=2, fill="#b5432d", tags=tags)
-            self.canvas.create_line(start_x, beam_top - 10, end_x, beam_top - 10, fill="#b5432d", width=3, tags=tags)
-            self.canvas.create_oval(start_x - 5, beam_top - 15, start_x + 5, beam_top - 5, fill="#b5432d", outline="", tags=tags)
-            self.canvas.create_oval(end_x - 5, beam_top - 15, end_x + 5, beam_top - 5, fill="#b5432d", outline="", tags=tags)
-            self.canvas.create_text((start_x + end_x) / 2, beam_top - 58, text=label, fill="#b5432d", font=("Segoe UI", 9, "bold"), tags=tags)
+                self.canvas.create_line(x_pos, beam_top - 12, x_pos, beam_top - 46, arrow=tk.LAST, width=2, fill="#00FFFF", tags=tags)
+            self.canvas.create_line(start_x, beam_top - 10, end_x, beam_top - 10, fill="#00FFFF", width=3, tags=tags)
+            self.canvas.create_oval(start_x - 5, beam_top - 15, start_x + 5, beam_top - 5, fill="#00FFFF", outline="", tags=tags)
+            self.canvas.create_oval(end_x - 5, beam_top - 15, end_x + 5, beam_top - 5, fill="#00FFFF", outline="", tags=tags)
+            self.canvas.create_text((start_x + end_x) / 2, beam_top - 58, text=label, fill="#00FFFF", font=("Segoe UI", 9, "bold"), tags=tags)
 
-        self.canvas.create_text(beam_left + 110, beam_top - offset, text=f"Load {index + 1}: {label}", fill="#333", anchor="w", font=("Segoe UI", 8), tags=tags)
+        self.canvas.create_text(beam_left + 110, beam_top - offset, text=f"Load {index + 1}: {label}", fill="#FFFFFF", anchor="w", font=("Segoe UI", 8), tags=tags)
 
 
 def run_gui() -> None:

@@ -2,6 +2,68 @@ import numpy as np
 import sympy as sp
 import matplotlib.pyplot as plt
 
+
+def build_sfd_bmd_figure(sx_expr, tau_expr, x_sym, y_sym, c_sym, L_sym, numerical_params: dict, specs: dict | None = None):
+    """Build a Matplotlib figure containing SFD and BMD plots without showing it."""
+    L_val = float(numerical_params[L_sym])
+    c_val = float(numerical_params[c_sym])
+
+    sx_num = sx_expr.subs(numerical_params)
+    tau_num = tau_expr.subs(numerical_params)
+    sx_func = sp.lambdify((x_sym, y_sym), sx_num, 'numpy')
+    tau_func = sp.lambdify((x_sym, y_sym), tau_num, 'numpy')
+
+    xs = np.linspace(0, L_val, 300)
+    ys = np.linspace(-c_val, c_val, 201)
+
+    S = np.zeros_like(xs)
+    M = np.zeros_like(xs)
+
+    for i, xv in enumerate(xs):
+        Y = ys
+        XV = np.full_like(ys, xv)
+        try:
+            tau_vals = tau_func(XV, Y)
+            sx_vals = sx_func(XV, Y)
+        except Exception:
+            tau_vals = np.array([float(tau_num.subs({x_sym: xv, y_sym: yv})) for yv in ys])
+            sx_vals = np.array([float(sx_num.subs({x_sym: xv, y_sym: yv})) for yv in ys])
+
+        S[i] = np.trapz(tau_vals, ys)
+        M[i] = np.trapz(sx_vals * ys, ys)
+
+    fig, axes = plt.subplots(2, 1, figsize=(9.5, 4.8), sharex=True)
+    fig.patch.set_facecolor("#000000")
+
+    axes[0].plot(xs, S, color='#00FFFF', linewidth=2.2)
+    axes[0].axhline(0, color='#FFFFFF', linewidth=0.8)
+    axes[0].set_ylabel('SFD', color='#FFFFFF', fontsize=10, fontweight='bold')
+    axes[0].set_title('Shear Force Diagram', fontsize=11, weight='bold', color='#FFFFFF')
+    axes[0].grid(True, alpha=0.22, linestyle='--', color='#444444')
+    axes[0].set_facecolor('#1a1a1a')
+    axes[0].tick_params(colors='#FFFFFF')
+
+    axes[1].plot(xs, M, color='#00FF00', linewidth=2.2)
+    axes[1].axhline(0, color='#FFFFFF', linewidth=0.8)
+    axes[1].set_ylabel('BMD', color='#FFFFFF', fontsize=10, fontweight='bold')
+    axes[1].set_xlabel('x', color='#FFFFFF', fontsize=10, fontweight='bold')
+    axes[1].set_title('Bending Moment Diagram', fontsize=11, weight='bold', color='#FFFFFF')
+    axes[1].grid(True, alpha=0.22, linestyle='--', color='#444444')
+    axes[1].set_facecolor('#1a1a1a')
+    axes[1].tick_params(colors='#FFFFFF')
+
+    if specs:
+        q_val = specs.get('distributed_load')
+        if q_val is not None:
+            axes[0].annotate(f'q = {q_val:g}', xy=(0.04 * L_val, 0.92 * max(S.max(), 1.0)), xycoords='data', color='#FFFF00', fontweight='bold')
+        p_val = specs.get('end_load')
+        if p_val is not None:
+            axes[0].annotate('', xy=(L_val, 0.82 * max(S.max(), 1.0)), xytext=(L_val, 0.18 * max(S.max(), 1.0)), arrowprops=dict(arrowstyle='->', color='#00FF00', lw=2.2))
+            axes[0].text(L_val, 0.86 * max(S.max(), 1.0), f'P = {p_val:g}', color='#00FF00', ha='right', va='bottom', fontweight='bold')
+
+    fig.tight_layout()
+    return fig
+
 def visualize_stresses(sx_expr, sy_expr, tau_expr, x_sym, y_sym, c_sym, L_sym, numerical_params: dict, specs: dict | None = None):
     """
     Evaluates exact symbolic expressions numerically over a coordinate grid and plots the output.
@@ -57,77 +119,6 @@ def visualize_stresses(sx_expr, sy_expr, tau_expr, x_sym, y_sym, c_sym, L_sym, n
 
 
 def plot_sfd_bmd(sx_expr, tau_expr, x_sym, y_sym, c_sym, L_sym, numerical_params: dict, specs: dict | None = None):
-    """Plot Shear Force Diagram (SFD) and Bending Moment Diagram (BMD).
-
-    sx_expr: σx(x,y)
-    tau_expr: τxy(x,y)
-    numerical_params: mapping containing numeric `L` and `c` and optional load values
-    specs: optional dict of loads to annotate diagrams
-    """
-    import numpy as np
-    import matplotlib.pyplot as plt
-
-    L_val = float(numerical_params[L_sym])
-    c_val = float(numerical_params[c_sym])
-
-    # prepare lambdified functions
-    sx_num = sx_expr.subs(numerical_params)
-    tau_num = tau_expr.subs(numerical_params)
-    sx_func = sp.lambdify((x_sym, y_sym), sx_num, 'numpy')
-    tau_func = sp.lambdify((x_sym, y_sym), tau_num, 'numpy')
-
-    xs = np.linspace(0, L_val, 300)
-    ys = np.linspace(-c_val, c_val, 201)
-
-    S = np.zeros_like(xs)
-    M = np.zeros_like(xs)
-
-    for i, xv in enumerate(xs):
-        # evaluate tau and sigma across y
-        Y = ys
-        XV = np.full_like(ys, xv)
-        try:
-            tau_vals = tau_func(XV, Y)
-            sx_vals = sx_func(XV, Y)
-        except Exception:
-            # fallback: try scalar evaluation
-            tau_vals = np.array([float(tau_num.subs({x_sym: xv, y_sym: yv})) for yv in ys])
-            sx_vals = np.array([float(sx_num.subs({x_sym: xv, y_sym: yv})) for yv in ys])
-
-        # shear force is integral of tau over section
-        S[i] = np.trapz(tau_vals, ys)
-        # bending moment is integral of sigma_x * y over section
-        M[i] = np.trapz(sx_vals * ys, ys)
-
-    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-    axes[0].plot(xs, S, color='tab:blue')
-    axes[0].axhline(0, color='k', linewidth=0.6)
-    axes[0].set_ylabel('Shear V(x)')
-    axes[0].set_title('Shear Force Diagram')
-
-    axes[1].plot(xs, M, color='tab:orange')
-    axes[1].axhline(0, color='k', linewidth=0.6)
-    axes[1].set_ylabel('Moment M(x)')
-    axes[1].set_xlabel('x')
-    axes[1].set_title('Bending Moment Diagram')
-
-    # annotate loads if provided
-    if specs:
-        # point loads
-        loads = []
-        for key, info in specs.items():
-            # skip the resultant keys
-            if key.startswith('resultant_') or key == 'degree' or key == 'case_name':
-                continue
-
-        # if GUI provided explicit load_rows it will annotate via GUI canvas; here we only show end/distributed
-        q_val = specs.get('distributed_load')
-        if q_val is not None:
-            axes[0].text(0.02 * L_val, 0.9 * axes[0].get_ylim()[1], f'q={q_val}', color='red')
-        P_val = specs.get('end_load')
-        if P_val is not None:
-            axes[0].annotate('', xy=(L_val, 0.8 * axes[0].get_ylim()[1]), xytext=(L_val, 0.2 * axes[0].get_ylim()[1]), arrowprops=dict(arrowstyle='->', color='green', lw=2))
-            axes[0].text(L_val, 0.85 * axes[0].get_ylim()[1], f'P={P_val}', color='green', ha='right')
-
-    plt.tight_layout()
+    fig = build_sfd_bmd_figure(sx_expr, tau_expr, x_sym, y_sym, c_sym, L_sym, numerical_params, specs)
     plt.show()
+    return fig

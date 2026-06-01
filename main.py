@@ -13,11 +13,16 @@ except ImportError:
 
 
 CASE_OPTIONS = {
-    "1": ("distributed_load", "Uniformly Distributed Load", "q (force per unit length, e.g. N/m)"),
-    "2": ("end_load", "Cantilever End Point Load", "P (force, e.g. N)"),
-    "3": ("moment", "Pure Bending", "M (moment, e.g. N·m)"),
-    "4": ("pure_tension", "Pure Tension / Compression", "F (force, e.g. N)"),
+    "1": ("distributed_load", "Uniformly Distributed Load", "q (force per unit length, N/m)"),
+    "2": ("end_load", "Cantilever End Point Load", "P (point force, Newtons, N)"),
+    "3": ("moment", "Pure Bending", "M (bending moment, Newton-meters, N·m)"),
+    "4": ("pure_tension", "Pure Tension / Compression", "F (axial force, Newtons, N)"),
     "5": ("custom", "Custom Boundary Expressions", "symbolic expressions in x, c, L, q, P, M, F"),
+}
+
+SUPPORT_OPTIONS = {
+    "cantilever_left": "Cantilever (fixed at x=0)",
+    "simply_supported": "Simply supported (pins/rollers at x=0 and x=L)",
 }
 
 
@@ -64,6 +69,13 @@ def prompt_expression(prompt: str, default: str = "0") -> str:
 
 
 def prompt_case() -> tuple[dict, str]:
+    print("\n" + "="*50)
+    print("All inputs must be in SI units:")
+    print("  • Length: meters (m)")
+    print("  • Force: Newtons (N)")
+    print("  • Distributed load: N/m")
+    print("  • Moment: Newton-meters (N·m)")
+    print("="*50 + "\n")
     print("Select a loading case:")
     for key, (_, label, _) in CASE_OPTIONS.items():
         print(f"  {key}. {label}")
@@ -73,7 +85,9 @@ def prompt_case() -> tuple[dict, str]:
         if choice in CASE_OPTIONS:
             spec_key, label, symbol_name = CASE_OPTIONS[choice]
             if spec_key == "custom":
-                return prompt_custom_case(), label
+                specs = prompt_custom_case()
+                specs["support_type"] = prompt_support_type()
+                return specs, label
             value = prompt_float(f"Enter the boundary value for {symbol_name}: ")
             specs = {
                 "distributed_load": None,
@@ -82,8 +96,22 @@ def prompt_case() -> tuple[dict, str]:
                 "pure_tension": None,
             }
             specs[spec_key] = value
+            specs["support_type"] = prompt_support_type()
             return specs, label
         print("Choose 1, 2, 3, 4, or 5.")
+
+
+def prompt_support_type() -> str:
+    print("Select the beam support condition:")
+    print("  1. Cantilever (fixed at x=0)")
+    print("  2. Simply supported (pins/rollers at x=0 and x=L)")
+    while True:
+        choice = input("Enter support number (1-2): ").strip()
+        if choice == "1":
+            return "cantilever_left"
+        if choice == "2":
+            return "simply_supported"
+        print("Choose 1 or 2.")
 
 
 def prompt_custom_case() -> dict:
@@ -109,11 +137,11 @@ def prompt_custom_case() -> dict:
 
 
 def prompt_geometry() -> dict:
-    print("Enter the beam geometry used for plotting.")
-    print("Use the same length unit for L and c as your model, and match q/P/F/M units consistently.")
+    print("Enter the beam geometry in SI units (meters, Newtons).")
+    print("-" * 50)
     return {
-        "L": prompt_float("Beam length L (length unit): "),
-        "c": prompt_float("Half-height c (length unit): "),
+        "L": prompt_float("Beam length L (meters, m): "),
+        "c": prompt_float("Half-height c (meters, m): "),
         "P": 0.0,
         "M": 0.0,
         "q": 0.0,
@@ -151,6 +179,8 @@ def run_solver_pipeline(user_specs: dict, numeric_eval_values: dict, plot_stress
     print(f" σx(x, y)  = {sp.simplify(sx)}")
     print(f" σy(x, y)  = {sp.simplify(sy)}")
     print(f" τxy(x, y) = {sp.simplify(txy)}")
+    print("-" * 101)
+    print("\n [UNITS] All stresses are in Pascals (Pa). Substitute L, c, q, P, M, F in SI units.")
     print("-" * 101 + "\n")
     
     # Step 6: Visualize
@@ -187,8 +217,14 @@ def main():
         return
 
     print("Airy Stress Function Solver")
-    print("---------------------------")
-    print("Units: q = force/length, P and F = force, M = moment, L and c = length.")
+    print("="*50)
+    print("ALL INPUTS AND OUTPUTS ARE IN SI UNITS:")
+    print("  • Lengths (L, c): meters (m)")
+    print("  • Forces (P, F): Newtons (N)")
+    print("  • Distributed Load (q): N/m")
+    print("  • Moments (M): Newton-meters (N·m)")
+    print("  • Stresses (σ, τ): Pascals (Pa = N/m²)")
+    print("="*50)
     user_specs, _case_name = prompt_case()
     execution_values = prompt_geometry()
 
